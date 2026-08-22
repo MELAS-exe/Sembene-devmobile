@@ -1,0 +1,125 @@
+# =====================================================================
+#  TERA — Backend + Back-office  |  Projet Développement Mobile
+# =====================================================================
+#
+#  DÉMARRAGE EN 2 ÉTAPES
+#
+#  1. Déposer votre clé Firebase À CÔTÉ de ce fichier, nommée exactement :
+#
+#         serviceAccountKey.json
+#
+#     (Console Firebase > Paramètres du projet > Comptes de service
+#      > « Générer une nouvelle clé privée », puis renommer le fichier.)
+#
+#  2. Dans ce dossier, lancer :
+#
+#         docker compose up -d
+#
+#  Puis patienter ~1 minute et ouvrir :
+#
+#         Back-office   ->  http://localhost:5173
+#         API / Swagger ->  http://localhost:8081/swagger-ui.html
+#
+#         Identifiants  ->  téléphone : 221772222224
+#                           mot de passe : AdminDefault
+#
+#  Aucune installation de Java, Node ou MySQL n'est nécessaire :
+#  les images sont téléchargées automatiquement depuis Docker Hub.
+#
+#  ---------------------------------------------------------------------
+#  Sans Firebase : mettre FIREBASE_ENABLED à "false" (ligne ~80) et
+#  supprimer la ligne du volume serviceAccountKey.json (ligne ~92).
+#  L'application démarre alors normalement, sans notifications push.
+#  ---------------------------------------------------------------------
+#
+#  Commandes utiles :
+#    docker compose ps              -> état des conteneurs
+#    docker compose logs -f backend -> logs du backend
+#    docker compose down            -> tout arrêter
+#    docker compose down -v         -> tout arrêter ET vider la base
+# =====================================================================
+
+services:
+
+  # ------------------------------------------------------------------
+  # Base de données MySQL (non exposée sur la machine hôte)
+  # ------------------------------------------------------------------
+  mysql:
+    image: mysql:8.4
+    container_name: tera-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: tera_password_2026
+      MYSQL_DATABASE: tera_db
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -ptera_password_2026 --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  # ------------------------------------------------------------------
+  # Backend Spring Boot — API REST (utilisée par le mobile)
+  # ------------------------------------------------------------------
+  backend:
+    image: melasembene/sembene-dev-mobile:backend-latest
+    container_name: tera-backend
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        # Le backend attend que MySQL soit réellement prêt.
+        condition: service_healthy
+    ports:
+      - "8081:8080"
+    environment:
+      DB_URL: jdbc:mysql://mysql:3306/tera_db?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
+      DB_USERNAME: root
+      DB_PASSWORD: tera_password_2026
+      DDL_AUTO: update
+
+      # Clé de signature des jetons JWT.
+      # Valeur fixe destinée à l'évaluation uniquement (ne pas réutiliser en production).
+      JWT_SECRET_KEY: dGVyYS1wcm9qZXQtbW9iaWxlLWNsZS1kZS1zaWduYXR1cmUtSldULTIwMjYtZXZhbHVhdGlvbg==
+
+      # Compte administrateur créé automatiquement au premier démarrage.
+      ADMIN_DEFAULT_PHONE: "221772222224"
+      ADMIN_DEFAULT_PASSWORD: AdminDefault
+
+      COMMISSION_RATE: "0.15"
+      UPLOAD_DIRECTORY: /app/uploads
+      CORS_ORIGINS: http://localhost:5173
+
+      # Notifications push. Mettre "false" pour démarrer sans Firebase.
+      FIREBASE_ENABLED: "true"
+      FIREBASE_SERVICE_ACCOUNT_PATH: /app/config/serviceAccountKey.json
+
+      TWILIO_ENABLED: "false"
+      PAYMENT_ENABLED: "false"
+    volumes:
+      # Votre clé Firebase, montée en lecture seule.
+      # ⚠ Le fichier doit exister AVANT « docker compose up ».
+      - ./serviceAccountKey.json:/app/config/serviceAccountKey.json:ro
+      - uploads:/app/uploads
+
+  # ------------------------------------------------------------------
+  # Back-office — interface web d'administration (nginx + React)
+  # ------------------------------------------------------------------
+  backoffice:
+    image: melasembene/sembene-dev-mobile:frontend-latest
+    container_name: tera-backoffice
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "5173:80"
+    environment:
+      # Adresse du backend vue DEPUIS le réseau Docker (nom du service +
+      # port interne). Ne jamais mettre localhost ici : nginx se renverrait
+      # vers lui-même. Cette valeur ne change pas si le port 8081 est modifié.
+      API_BASE_URL: http://backend:8080
+
+volumes:
+  mysql-data:
+  uploads:
